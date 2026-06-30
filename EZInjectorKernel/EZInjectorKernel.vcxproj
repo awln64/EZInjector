@@ -72,9 +72,11 @@
   <ItemGroup>
     <ClInclude Include="Communication.h" />
     <ClInclude Include="Driver.h" />
+    <ClInclude Include="Logger.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Driver.c" />
+    <ClCompile Include="Logger.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
