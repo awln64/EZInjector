@@ -139,6 +139,8 @@
     <ClInclude Include="src\Injection\InjectorManager.h" />
     <ClInclude Include="src\Injection\LoadLibraryInjector.h" />
     <ClInclude Include="src\Injection\ManualMapInjector.h" />
+    <ClInclude Include="src\Injection\KernelNativeInjector.h" />
+    <ClInclude Include="src\Injection\KernelManualMapInjector.h" />
     <ClInclude Include="src\UI\DirectXSetup.h" />
     <ClInclude Include="src\UI\MainWindow.h" />
     <ClInclude Include="src\Utils\MemoryUtils.h" />
@@ -157,6 +159,8 @@
     <ClCompile Include="src\Injection\InjectorManager.cpp" />
     <ClCompile Include="src\Injection\LoadLibraryInjector.cpp" />
     <ClCompile Include="src\Injection\ManualMapInjector.cpp" />
+    <ClCompile Include="src\Injection\KernelNativeInjector.cpp" />
+    <ClCompile Include="src\Injection\KernelManualMapInjector.cpp" />
     <ClCompile Include="src\UI\DirectXSetup.cpp" />
     <ClCompile Include="src\UI\MainWindow.cpp" />
     <ClCompile Include="src\Utils\MemoryUtils.cpp" />

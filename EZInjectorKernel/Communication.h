@@ -1,0 +1,34 @@
+#pragma once
+
+#ifdef _KERNEL_MODE
+#include <ntifs.h>
+#else
+#include <windows.h>
+#endif
+
+#define EZI_DEVICE_TYPE 0x8000
+
+#define IOCTL_EZI_KERNEL_NATIVE_INJECT CTL_CODE(EZI_DEVICE_TYPE, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_EZI_KERNEL_MANUAL_MAP    CTL_CODE(EZI_DEVICE_TYPE, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define EZI_MAX_PATH 260
+
+#pragma pack(push, 8)
+
+typedef struct _KERNEL_NATIVE_INJECT_REQUEST {
+    ULONG TargetPid;
+    CHAR DllPath[EZI_MAX_PATH];
+} KERNEL_NATIVE_INJECT_REQUEST, *PKERNEL_NATIVE_INJECT_REQUEST;
+
+typedef struct _KERNEL_MANUAL_MAP_REQUEST {
+    ULONG TargetPid;
+    CHAR DllPath[EZI_MAX_PATH];
+    BOOLEAN LinkPeb;
+    BOOLEAN ErasePe;
+    BOOLEAN ResolveImports;
+    BOOLEAN IgnoreTls;
+    BOOLEAN ConcealMem;
+    BOOLEAN NoExceptions;
+} KERNEL_MANUAL_MAP_REQUEST, *PKERNEL_MANUAL_MAP_REQUEST;
+
+#pragma pack(pop)

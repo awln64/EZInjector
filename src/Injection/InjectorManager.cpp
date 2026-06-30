@@ -1,6 +1,8 @@
 #include "InjectorManager.h"
 #include "LoadLibraryInjector.h"
 #include "ManualMapInjector.h"
+#include "KernelNativeInjector.h"
+#include "KernelManualMapInjector.h"
 
 namespace Injection {
 
@@ -21,6 +23,19 @@ namespace Injection {
             opts.concealMem = config.mmConcealMem;
             opts.noExceptions = config.mmNoExceptions;
             return std::make_unique<ManualMapInjector>(opts);
+        }
+        else if (config.method == InjectionMethod::KernelNative) {
+            return std::make_unique<KernelNativeInjector>();
+        }
+        else if (config.method == InjectionMethod::KernelManualMap) {
+            return std::make_unique<KernelManualMapInjector>(
+                config.mmLinkPeb,
+                config.mmErasePe,
+                config.mmResolveImports,
+                config.mmIgnoreTls,
+                config.mmConcealMem,
+                config.mmNoExceptions
+            );
         }
         
         return nullptr;

@@ -7,7 +7,9 @@ namespace Injection {
 
     enum class InjectionMethod {
         LoadLibrary,
-        ManualMap
+        ManualMap,
+        KernelNative,
+        KernelManualMap
     };
 
     struct InjectorConfig {

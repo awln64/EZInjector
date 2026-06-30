@@ -145,6 +145,8 @@ namespace UI {
         int method = (int)g_InjectorConfig.method;
         ImGui::RadioButton("LoadLibrary (Standard)", &method, 0);
         ImGui::RadioButton("Manual Mapping", &method, 1);
+        ImGui::RadioButton("Kernel Native Inject", &method, 2);
+        ImGui::RadioButton("Kernel Manual Map", &method, 3);
         g_InjectorConfig.method = (Injection::InjectionMethod)method;
 
         ImGui::Spacing();
@@ -158,13 +160,20 @@ namespace UI {
             ImGui::Checkbox("Erase PE Headers", &g_InjectorConfig.llErasePe);
             ImGui::Checkbox("Use existing thread (Thread Hi-jacking)", &g_InjectorConfig.llThreadHijack);
         }
-        else {
+        else if (g_InjectorConfig.method == Injection::InjectionMethod::ManualMap || g_InjectorConfig.method == Injection::InjectionMethod::KernelManualMap) {
+            if (g_InjectorConfig.method == Injection::InjectionMethod::KernelManualMap) {
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "[Kernel Mode Mapping Active]");
+            }
             ImGui::Checkbox("Link to PEB", &g_InjectorConfig.mmLinkPeb);
             ImGui::Checkbox("Erase PE Headers", &g_InjectorConfig.mmErasePe);
             ImGui::Checkbox("Resolve imports", &g_InjectorConfig.mmResolveImports);
             ImGui::Checkbox("Ignore TLS", &g_InjectorConfig.mmIgnoreTls);
             ImGui::Checkbox("Conceal memory", &g_InjectorConfig.mmConcealMem);
             ImGui::Checkbox("No exception support", &g_InjectorConfig.mmNoExceptions);
+        }
+        else if (g_InjectorConfig.method == Injection::InjectionMethod::KernelNative) {
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "[Ring-0 APC / Shellcode Delivery Active]");
+            ImGui::TextWrapped("Injects via kernel mode driver (\\Device\\EZInjectorKernel) bypassing standard usermode API hooks.");
         }
 
         ImGui::Spacing();
