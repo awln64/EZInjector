@@ -62,21 +62,29 @@
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
     </ClCompile>
+    <Link>
+      <AdditionalDependencies>wdmsec.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
     </ClCompile>
+    <Link>
+      <AdditionalDependencies>wdmsec.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Communication.h" />
     <ClInclude Include="Driver.h" />
     <ClInclude Include="Logger.h" />
+    <ClInclude Include="PeUtils.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Driver.c" />
     <ClCompile Include="Logger.c" />
+    <ClCompile Include="PeUtils.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

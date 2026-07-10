@@ -13,11 +13,11 @@ namespace Injection {
 
         LoadLibraryInjector(const Options& options);
 
-        bool Inject(DWORD pid, const std::string& dllPath) override;
+        InjectionResult Inject(DWORD pid, const std::string& dllPath) override;
 
     private:
-        bool Inject_LoadLibrary(DWORD pid, const std::string& dllPath);
-        bool Inject_ThreadHijack(DWORD pid, const std::string& dllPath);
+        InjectionResult Inject_LoadLibrary(DWORD pid, const std::string& dllPath);
+        InjectionResult Inject_ThreadHijack(DWORD pid, const std::string& dllPath);
 
         Options m_options;
     };

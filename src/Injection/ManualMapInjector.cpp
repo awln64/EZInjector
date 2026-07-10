@@ -5,6 +5,24 @@
 
 namespace Injection {
 
+    struct ManualMapData {
+        BYTE* ImageBase;
+        ULONGLONG RelocationDelta;
+        IMAGE_BASE_RELOCATION* pBaseReloc;
+        IMAGE_IMPORT_DESCRIPTOR* pImportDesc;
+        IMAGE_TLS_DIRECTORY* pTlsDir;
+        RUNTIME_FUNCTION* pExceptionDir;
+        DWORD ExceptionSize;
+        PVOID EntryPoint;
+        decltype(&LoadLibraryA) fnLoadLibraryA;
+        decltype(&GetProcAddress) fnGetProcAddress;
+        decltype(&RtlAddFunctionTable) fnRtlAddFunctionTable;
+        BOOL ResolveImports;
+        BOOL IgnoreTls;
+        BOOL NoExceptions;
+        BOOL Success;
+    };
+
 #pragma runtime_checks("", off)
 #pragma optimize("ts", on)
     static DWORD WINAPI ManualMapShellcode(ManualMapData* pData) {
@@ -84,9 +102,7 @@ namespace Injection {
 
         // 4. Register exception handlers
         if (!pData->NoExceptions && pData->pExceptionDir && pData->ExceptionSize) {
-            pData->fnRtlAddFunctionTable(
-                pData->pExceptionDir,
-                pData->ExceptionSize / sizeof(RUNTIME_FUNCTION), (DWORD64)pBase);
+            pData->fnRtlAddFunctionTable(pData->pExceptionDir, pData->ExceptionSize / sizeof(RUNTIME_FUNCTION), (DWORD64)pBase);
         }
 
         // 5. Call DllMain
@@ -107,13 +123,13 @@ namespace Injection {
 
     ManualMapInjector::ManualMapInjector(const Options& options) : m_options(options) {}
 
-    bool ManualMapInjector::Inject(DWORD pid, const std::string& dllPath) {
+    InjectionResult ManualMapInjector::Inject(DWORD pid, const std::string& dllPath) {
         // 1. Read DLL file
         std::ifstream file(dllPath, std::ios::binary | std::ios::ate);
-        if (!file.is_open()) return false;
+        if (!file.is_open()) return InjectionResult::Failure("Failed to open DLL file from disk: " + dllPath);
 
         size_t fileSize = (size_t)file.tellg();
-        if (fileSize < sizeof(IMAGE_DOS_HEADER)) return false;
+        if (fileSize < sizeof(IMAGE_DOS_HEADER)) return InjectionResult::Failure("File size is smaller than IMAGE_DOS_HEADER.");
 
         file.seekg(0, std::ios::beg);
         std::vector<BYTE> fileData(fileSize);
@@ -123,22 +139,29 @@ namespace Injection {
 
         // 2. Parse and validate PE
         IMAGE_DOS_HEADER* pDos = (IMAGE_DOS_HEADER*)fileData.data();
-        if (pDos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+        if (pDos->e_magic != IMAGE_DOS_SIGNATURE) return InjectionResult::Failure("Invalid DOS header signature (not 'MZ').");
 
         IMAGE_NT_HEADERS* pNt = (IMAGE_NT_HEADERS*)(fileData.data() + pDos->e_lfanew);
-        if (pNt->Signature != IMAGE_NT_SIGNATURE) return false;
+        if (pNt->Signature != IMAGE_NT_SIGNATURE) return InjectionResult::Failure("Invalid NT headers signature (not 'PE\\0\\0').");
 
-        if (pNt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) return false;
+        if (pNt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) return InjectionResult::Failure("DLL machine type is not x64 (IMAGE_FILE_MACHINE_AMD64).");
 
         // 3. Open target process
-        HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-        if (!hProcess) return false;
+        HANDLE hProcess = OpenProcess(
+            PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ |
+            PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION, FALSE, pid);
+
+        if (!hProcess) {
+            DWORD err = GetLastError();
+            return InjectionResult::Failure("Failed to open target process.", err);
+        }
 
         // 4. Allocate memory in target for the image
-        BYTE* pRemoteBase = (BYTE*)VirtualAllocEx(hProcess, nullptr, pNt->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        BYTE* pRemoteBase = (BYTE*)VirtualAllocEx(hProcess, nullptr, pNt->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!pRemoteBase) {
+            DWORD err = GetLastError();
             CloseHandle(hProcess);
-            return false;
+            return InjectionResult::Failure("VirtualAllocEx failed to allocate image base in target process.", err);
         }
 
         // 5. Copy PE headers
@@ -190,57 +213,79 @@ namespace Injection {
 
         // 8. Determine shellcode size and handle debug JMP stubs
         BYTE* pShellcodeFunc = (BYTE*)ManualMapShellcode;
+        BYTE* pShellcodeEnd = (BYTE*)ManualMapShellcodeEnd;
 
-#ifdef _DEBUG
-        if (*pShellcodeFunc == 0xE9) {
-            pShellcodeFunc = pShellcodeFunc + 5 + *(int*)(pShellcodeFunc + 1);
-        }
-#endif
+        auto ResolveJmpThunk = [](BYTE* p) -> BYTE* {
+            if (p && *p == 0xE9) {
+                return p + 5 + *(int*)(p + 1);
+            }
+            return p;
+        };
+        pShellcodeFunc = ResolveJmpThunk(pShellcodeFunc);
+        pShellcodeEnd = ResolveJmpThunk(pShellcodeEnd);
 
-        SIZE_T shellcodeSize = (SIZE_T)((BYTE*)ManualMapShellcodeEnd - (BYTE*)ManualMapShellcode);
+        SIZE_T shellcodeSize = (SIZE_T)(pShellcodeEnd - pShellcodeFunc);
         if (shellcodeSize == 0 || shellcodeSize > 0x2000) {
             shellcodeSize = 0x1000; // Fallback to 4KB
         }
 
-        // 9. Allocate memory for shellcode + data in target
-        SIZE_T totalAlloc = shellcodeSize + sizeof(ManualMapData) + 16;
-        BYTE* pRemoteShellcode = (BYTE*)VirtualAllocEx(hProcess, nullptr, totalAlloc, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        // 9. Allocate SEPARATE regions for shellcode (will become RX) and data (stays RW)
+        // They must be separate so VirtualProtectEx on shellcode pages doesn't make data read-only
+        BYTE* pRemoteShellcode = (BYTE*)VirtualAllocEx(hProcess, nullptr, shellcodeSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        BYTE* pRemoteData = (BYTE*)VirtualAllocEx(hProcess, nullptr, sizeof(ManualMapData), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 
-        if (!pRemoteShellcode) {
+        if (!pRemoteShellcode || !pRemoteData) {
+            DWORD err = GetLastError();
+            if (pRemoteShellcode) VirtualFreeEx(hProcess, pRemoteShellcode, 0, MEM_RELEASE);
+            if (pRemoteData) VirtualFreeEx(hProcess, pRemoteData, 0, MEM_RELEASE);
             VirtualFreeEx(hProcess, pRemoteBase, 0, MEM_RELEASE);
             CloseHandle(hProcess);
-            return false;
+            return InjectionResult::Failure("VirtualAllocEx failed to allocate remote shellcode/data memory.", err);
         }
-
-        // Data goes right after shellcode (aligned to 16 bytes)
-        BYTE* pRemoteData = pRemoteShellcode + ((shellcodeSize + 15) & ~(SIZE_T)15);
 
         // 10. Write shellcode and data
         WriteProcessMemory(hProcess, pRemoteShellcode, pShellcodeFunc, shellcodeSize, nullptr);
         WriteProcessMemory(hProcess, pRemoteData, &mapData, sizeof(mapData), nullptr);
 
+        DWORD oldBaseProtect;
+        VirtualProtectEx(hProcess, pRemoteBase, pNt->OptionalHeader.SizeOfImage, PAGE_EXECUTE_READWRITE, &oldBaseProtect);
+
+        DWORD oldShellcodeProtect;
+        VirtualProtectEx(hProcess, pRemoteShellcode, shellcodeSize, PAGE_EXECUTE_READ, &oldShellcodeProtect);
+
         // 11. Execute shellcode
         HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0, (LPTHREAD_START_ROUTINE)pRemoteShellcode, pRemoteData, 0, nullptr);
 
         if (!hThread) {
+            DWORD err = GetLastError();
             VirtualFreeEx(hProcess, pRemoteShellcode, 0, MEM_RELEASE);
+            VirtualFreeEx(hProcess, pRemoteData, 0, MEM_RELEASE);
             VirtualFreeEx(hProcess, pRemoteBase, 0, MEM_RELEASE);
             CloseHandle(hProcess);
-            return false;
+            return InjectionResult::Failure("CreateRemoteThread failed to execute manual mapping shellcode.", err);
         }
 
-        WaitForSingleObject(hThread, INFINITE);
+        DWORD waitResult = WaitForSingleObject(hThread, 30000);
         CloseHandle(hThread);
+
+        if (waitResult == WAIT_TIMEOUT) {
+            VirtualFreeEx(hProcess, pRemoteShellcode, 0, MEM_RELEASE);
+            VirtualFreeEx(hProcess, pRemoteData, 0, MEM_RELEASE);
+            VirtualFreeEx(hProcess, pRemoteBase, 0, MEM_RELEASE);
+            CloseHandle(hProcess);
+            return InjectionResult::Failure("Manual mapping shellcode timed out after 30 seconds (possible DllMain deadlock).");
+        }
 
         // 12. Check result
         ManualMapData result = {};
         ReadProcessMemory(hProcess, pRemoteData, &result, sizeof(result), nullptr);
 
         VirtualFreeEx(hProcess, pRemoteShellcode, 0, MEM_RELEASE);
+        VirtualFreeEx(hProcess, pRemoteData, 0, MEM_RELEASE);
         if (!result.Success) {
             VirtualFreeEx(hProcess, pRemoteBase, 0, MEM_RELEASE);
             CloseHandle(hProcess);
-            return false;
+            return InjectionResult::Failure("Manual mapping shellcode returned failure (e.g. failed import resolution or DllMain returned FALSE).");
         }
 
         // 13. Post-injection options
@@ -257,6 +302,6 @@ namespace Injection {
         }
 
         CloseHandle(hProcess);
-        return true;
+        return InjectionResult::Success("Manual mapping completed successfully.");
     }
 }

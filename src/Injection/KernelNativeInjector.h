@@ -5,7 +5,7 @@ namespace Injection {
 
     class KernelNativeInjector : public IInjector {
     public:
-        bool Inject(DWORD targetPid, const std::string& dllPath) override;
+        InjectionResult Inject(DWORD targetPid, const std::string& dllPath) override;
     };
 
 }

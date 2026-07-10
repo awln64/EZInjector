@@ -25,36 +25,44 @@ namespace Utils {
         if (!ReadProcessMemory(hProcess, peb.Ldr, &ldrData, sizeof(ldrData), nullptr))
             return false;
 
-        LIST_ENTRY* pListHead = &ldrData.InLoadOrderModuleList;
+        BYTE* pLdrAddr = (BYTE*)peb.Ldr;
+        LIST_ENTRY* pRemoteListHead = (LIST_ENTRY*)(pLdrAddr + offsetof(FULL_PEB_LDR_DATA, InLoadOrderModuleList));
+
         LIST_ENTRY currentListEntry;
-        if (!ReadProcessMemory(hProcess, pListHead->Flink, &currentListEntry, sizeof(currentListEntry), nullptr)) {
+        LIST_ENTRY* pCurrentNode = ldrData.InLoadOrderModuleList.Flink;
+        if (!ReadProcessMemory(hProcess, pCurrentNode, &currentListEntry, sizeof(currentListEntry), nullptr)) {
             return false;
         }
 
-        LIST_ENTRY* pCurrentNode = pListHead->Flink;
-
-        while (pCurrentNode != pListHead) {
+        int maxIterations = 4096;
+        while (pCurrentNode != pRemoteListHead && maxIterations-- > 0) {
             LDR_DATA_TABLE_ENTRY_COMPLETED entry;
             if (ReadProcessMemory(hProcess, pCurrentNode, &entry, sizeof(entry), nullptr)) {
                 if (entry.DllBase == (PVOID)hModule) {
 
-                    auto UnlinkList = [&](LIST_ENTRY& list) {
+                    auto UnlinkList = [&](LIST_ENTRY& list) -> bool {
                         LIST_ENTRY prev, next;
-                        ReadProcessMemory(hProcess, list.Blink, &prev, sizeof(prev), nullptr);
-                        ReadProcessMemory(hProcess, list.Flink, &next, sizeof(next), nullptr);
+                        if (!ReadProcessMemory(hProcess, list.Blink, &prev, sizeof(prev), nullptr))
+                            return false;
+                        if (!ReadProcessMemory(hProcess, list.Flink, &next, sizeof(next), nullptr))
+                            return false;
 
                         prev.Flink = list.Flink;
                         next.Blink = list.Blink;
 
-                        WriteProcessMemory(hProcess, list.Blink, &prev, sizeof(prev), nullptr);
-                        WriteProcessMemory(hProcess, list.Flink, &next, sizeof(next), nullptr);
+                        if (!WriteProcessMemory(hProcess, list.Blink, &prev, sizeof(prev), nullptr))
+                            return false;
+                        if (!WriteProcessMemory(hProcess, list.Flink, &next, sizeof(next), nullptr))
+                            return false;
+                        return true;
                     };
 
-                    UnlinkList(entry.InLoadOrderLinks);
-                    UnlinkList(entry.InMemoryOrderLinks);
-                    UnlinkList(entry.InInitializationOrderLinks);
+                    bool ok = true;
+                    ok = UnlinkList(entry.InLoadOrderLinks) && ok;
+                    ok = UnlinkList(entry.InMemoryOrderLinks) && ok;
+                    ok = UnlinkList(entry.InInitializationOrderLinks) && ok;
 
-                    return true;
+                    return ok;
                 }
             }
 
@@ -128,8 +136,11 @@ namespace Utils {
         BYTE* pRemoteFullDll = pRemoteMem + sizeof(LDR_DATA_TABLE_ENTRY_COMPLETED);
         BYTE* pRemoteBaseDll = pRemoteFullDll + wideByteLen + 2;
 
-        WriteProcessMemory(hProcess, pRemoteFullDll, fullPath.c_str(), wideByteLen + 2, nullptr);
-        WriteProcessMemory(hProcess, pRemoteBaseDll, baseName.c_str(), (baseName.length() * sizeof(wchar_t)) + 2, nullptr);
+        if (!WriteProcessMemory(hProcess, pRemoteFullDll, fullPath.c_str(), wideByteLen + 2, nullptr) ||
+            !WriteProcessMemory(hProcess, pRemoteBaseDll, baseName.c_str(), (baseName.length() * sizeof(wchar_t)) + 2, nullptr)) {
+            VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
+            return false;
+        }
 
         LDR_DATA_TABLE_ENTRY_COMPLETED entry = {};
         entry.DllBase = pRemoteBase;
@@ -148,7 +159,10 @@ namespace Utils {
         LIST_ENTRY* pListHead = (LIST_ENTRY*)(pLdrAddr + offsetof(FULL_PEB_LDR_DATA, InLoadOrderModuleList));
 
         LIST_ENTRY headEntry;
-        ReadProcessMemory(hProcess, pListHead, &headEntry, sizeof(headEntry), nullptr);
+        if (!ReadProcessMemory(hProcess, pListHead, &headEntry, sizeof(headEntry), nullptr)) {
+            VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
+            return false;
+        }
 
         entry.InLoadOrderLinks.Flink = pListHead;
         entry.InLoadOrderLinks.Blink = headEntry.Blink;
@@ -157,7 +171,10 @@ namespace Utils {
         LIST_ENTRY* pMemOrderHead = (LIST_ENTRY*)(pLdrAddr + offsetof(FULL_PEB_LDR_DATA, InMemoryOrderModuleList));
         LIST_ENTRY memHead;
 
-        ReadProcessMemory(hProcess, pMemOrderHead, &memHead, sizeof(memHead), nullptr);
+        if (!ReadProcessMemory(hProcess, pMemOrderHead, &memHead, sizeof(memHead), nullptr)) {
+            VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
+            return false;
+        }
 
         entry.InMemoryOrderLinks.Flink = pMemOrderHead;
         entry.InMemoryOrderLinks.Blink = memHead.Blink;
@@ -165,17 +182,29 @@ namespace Utils {
         LIST_ENTRY* pRemoteInitOrder = (LIST_ENTRY*)(pRemoteMem + offsetof(LDR_DATA_TABLE_ENTRY_COMPLETED, InInitializationOrderLinks));
         LIST_ENTRY* pInitOrderHead = (LIST_ENTRY*)(pLdrAddr + offsetof(FULL_PEB_LDR_DATA, InInitializationOrderModuleList));
         LIST_ENTRY initHead;
-        ReadProcessMemory(hProcess, pInitOrderHead, &initHead, sizeof(initHead), nullptr);
+        if (!ReadProcessMemory(hProcess, pInitOrderHead, &initHead, sizeof(initHead), nullptr)) {
+            VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
+            return false;
+        }
 
         entry.InInitializationOrderLinks.Flink = pInitOrderHead;
         entry.InInitializationOrderLinks.Blink = initHead.Blink;
 
-        WriteProcessMemory(hProcess, pRemoteMem, &entry, sizeof(entry), nullptr);
+        if (!WriteProcessMemory(hProcess, pRemoteMem, &entry, sizeof(entry), nullptr)) {
+            VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
+            return false;
+        }
 
         LIST_ENTRY oldTail;
-        ReadProcessMemory(hProcess, headEntry.Blink, &oldTail, sizeof(oldTail), nullptr);
+        if (!ReadProcessMemory(hProcess, headEntry.Blink, &oldTail, sizeof(oldTail), nullptr)) {
+            VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
+            return false;
+        }
         oldTail.Flink = pRemoteEntry;
-        WriteProcessMemory(hProcess, headEntry.Blink, &oldTail, sizeof(oldTail), nullptr);
+        if (!WriteProcessMemory(hProcess, headEntry.Blink, &oldTail, sizeof(oldTail), nullptr)) {
+            VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
+            return false;
+        }
 
         headEntry.Blink = pRemoteEntry;
         WriteProcessMemory(hProcess, pListHead, &headEntry, sizeof(headEntry), nullptr);
@@ -231,6 +260,8 @@ namespace Utils {
     }
 
     void ConcealMemory(HANDLE hProcess, BYTE* pRemoteBase, IMAGE_NT_HEADERS* pNt, IMAGE_SECTION_HEADER* pSections) {
+        if (!pRemoteBase || !pNt || !pSections) return;
+
         DWORD oldProtect;
         VirtualProtectEx(hProcess, pRemoteBase, pNt->OptionalHeader.SizeOfHeaders, PAGE_READONLY, &oldProtect);
 
@@ -242,22 +273,24 @@ namespace Utils {
             VirtualProtectEx(hProcess, pRemoteBase + pSections[i].VirtualAddress, size, protect, &oldProtect);
         }
 
-        auto& relocDir = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-        if (relocDir.VirtualAddress && relocDir.Size) {
-            std::vector<BYTE> zeros(relocDir.Size, 0);
+        if (pNt->OptionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC) {
+            auto& relocDir = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+            if (relocDir.VirtualAddress && relocDir.Size) {
+                std::vector<BYTE> zeros(relocDir.Size, 0);
 
-            VirtualProtectEx(hProcess, pRemoteBase + relocDir.VirtualAddress, relocDir.Size, PAGE_READWRITE, &oldProtect);
-            WriteProcessMemory(hProcess, pRemoteBase + relocDir.VirtualAddress, zeros.data(), relocDir.Size, nullptr);
-            DWORD sectionProt = PAGE_READONLY;
+                VirtualProtectEx(hProcess, pRemoteBase + relocDir.VirtualAddress, relocDir.Size, PAGE_READWRITE, &oldProtect);
+                WriteProcessMemory(hProcess, pRemoteBase + relocDir.VirtualAddress, zeros.data(), relocDir.Size, nullptr);
+                DWORD sectionProt = PAGE_READONLY;
 
-            for (int i = 0; i < pNt->FileHeader.NumberOfSections; i++) {
-                if (pSections[i].VirtualAddress <= relocDir.VirtualAddress && relocDir.VirtualAddress < pSections[i].VirtualAddress + pSections[i].Misc.VirtualSize) {
-                    sectionProt = GetSectionProtection(pSections[i].Characteristics);
-                    break;
+                for (int i = 0; i < pNt->FileHeader.NumberOfSections; i++) {
+                    if (pSections[i].VirtualAddress <= relocDir.VirtualAddress && relocDir.VirtualAddress < pSections[i].VirtualAddress + pSections[i].Misc.VirtualSize) {
+                        sectionProt = GetSectionProtection(pSections[i].Characteristics);
+                        break;
+                    }
                 }
-            }
 
-            VirtualProtectEx(hProcess, pRemoteBase + relocDir.VirtualAddress, relocDir.Size, sectionProt, &oldProtect);
+                VirtualProtectEx(hProcess, pRemoteBase + relocDir.VirtualAddress, relocDir.Size, sectionProt, &oldProtect);
+            }
         }
     }
 

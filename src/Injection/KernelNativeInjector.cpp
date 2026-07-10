@@ -2,27 +2,22 @@
 #include <windows.h>
 #include <iostream>
 #include "../../EZInjectorKernel/Communication.h"
+#include "../Utils/ProcessUtils.h"
 
 namespace Injection {
 
-    bool KernelNativeInjector::Inject(DWORD targetPid, const std::string& dllPath) {
-        HANDLE hDevice = CreateFileA(
-            "\\\\.\\EZInjectorKernel",
-            GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            NULL,
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            NULL
-        );
+    InjectionResult KernelNativeInjector::Inject(DWORD targetPid, const std::string& dllPath) {
+        HANDLE hDevice = Utils::OpenKernelDriverHandle();
 
         if (hDevice == INVALID_HANDLE_VALUE) {
-            std::cerr << "[KernelNativeInjector] Could not open handle to EZInjectorKernel driver. Error: " << GetLastError() << std::endl;
-            return false;
+            DWORD err = GetLastError();
+            std::cerr << "[KernelNativeInjector] Could not open handle to EZInjectorKernel driver. Error: " << err << std::endl;
+            return InjectionResult::Failure("Could not open handle to EZInjectorKernel driver (\\\\.\\EZInjectorKernel). Ensure EZInjectorKernel.sys is built/loaded or run EZInjector as Administrator.", err);
         }
 
         KERNEL_NATIVE_INJECT_REQUEST request = {};
         request.TargetPid = targetPid;
+        request.TargetThreadId = Utils::GetTargetThreadId(targetPid);
         strncpy_s(request.DllPath, sizeof(request.DllPath), dllPath.c_str(), _TRUNCATE);
 
         DWORD bytesReturned = 0;
@@ -40,11 +35,12 @@ namespace Injection {
         CloseHandle(hDevice);
 
         if (!success) {
-            std::cerr << "[KernelNativeInjector] DeviceIoControl failed. Error: " << GetLastError() << std::endl;
-            return false;
+            DWORD err = GetLastError();
+            std::cerr << "[KernelNativeInjector] DeviceIoControl failed. Error: " << err << std::endl;
+            return InjectionResult::Failure("DeviceIoControl (IOCTL_EZI_KERNEL_NATIVE_INJECT) failed in kernel mode.", err);
         }
 
-        return true;
+        return InjectionResult::Success("Kernel native injection completed successfully.");
     }
 
 }

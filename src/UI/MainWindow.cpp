@@ -7,6 +7,7 @@
 #include "../../ImGui/imgui_impl_win32.h"
 #include <dwmapi.h>
 #include <tchar.h>
+#include <thread>
 
 #ifdef _DEBUG
 #define LOG(fmt, ...) printf("[EZI] " fmt "\n", ##__VA_ARGS__)
@@ -36,10 +37,20 @@ namespace UI {
     }
 
     MainWindow::~MainWindow() {
+        // Ensure injection thread finishes before destroying members it references
+        m_stopRequested.store(true);
+        if (m_injectionThread.joinable()) {
+            m_injectionThread.join();
+        }
+
         ImGui_ImplDX11_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
         CleanupDeviceD3D();
+        if (m_hIcon) {
+            DestroyIcon(m_hIcon);
+            m_hIcon = nullptr;
+        }
         if (m_hWnd) {
             DestroyWindow(m_hWnd);
         }
@@ -57,7 +68,15 @@ namespace UI {
             for (UINT i = 0; i < fileCount; ++i) {
                 char filePath[MAX_PATH];
                 if (DragQueryFileA(hDrop, i, filePath, MAX_PATH)) {
-                    s_DroppedFilesQueue.push_back(filePath);
+                    std::string path(filePath);
+                    size_t dotPos = path.rfind('.');
+                    if (dotPos != std::string::npos) {
+                        std::string ext = path.substr(dotPos);
+                        // Case-insensitive extension check
+                        if (_stricmp(ext.c_str(), ".dll") == 0) {
+                            s_DroppedFilesQueue.push_back(path);
+                        }
+                    }
                 }
             }
             DragFinish(hDrop);
@@ -83,7 +102,9 @@ namespace UI {
         WNDCLASSEX wc = { sizeof(WNDCLASSEX),  CS_CLASSDC, WndProc, 0L, 0L,
                          m_hInstance, nullptr, nullptr, nullptr, nullptr,
                          _T("MonolithImGui"), nullptr };
-        RegisterClassEx(&wc);
+        if (!RegisterClassEx(&wc)) {
+            return false;
+        }
 
         m_hWnd = CreateWindow(wc.lpszClassName, _T("EZ Injector by awalone"), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
             100, 100, 450, 550, nullptr, nullptr, wc.hInstance, nullptr);
@@ -93,10 +114,15 @@ namespace UI {
 
         BYTE andMask[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
         BYTE xorMask[4] = { 0x00, 0x00, 0x00, 0x00 };
-        HICON hInvisibleIcon = CreateIcon(nullptr, 1, 1, 1, 32, andMask, xorMask);
-        SendMessageW(m_hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hInvisibleIcon));
+        m_hIcon = CreateIcon(nullptr, 1, 1, 1, 32, andMask, xorMask);
+        SendMessageW(m_hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(m_hIcon));
 
         DragAcceptFiles(m_hWnd, TRUE);
+
+        // Allow drag & drop when running as administrator (UIPI blocks WM_DROPFILES by default)
+        ChangeWindowMessageFilterEx(m_hWnd, WM_DROPFILES, MSGFLT_ALLOW, nullptr);
+        ChangeWindowMessageFilterEx(m_hWnd, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
+        ChangeWindowMessageFilterEx(m_hWnd, 0x0049 /*WM_COPYGLOBALDATA*/, MSGFLT_ALLOW, nullptr);
 
         if (!CreateDeviceD3D(m_hWnd)) {
             CleanupDeviceD3D();
@@ -282,58 +308,28 @@ namespace UI {
             ImGui::Separator();
             ImGui::Spacing();
 
+            if (m_isInjecting) {
+                std::lock_guard<std::mutex> lock(m_injectionMutex);
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "[PROCESSING] %s", m_injectionStatusText.c_str());
+            } else {
+                ImGui::Spacing();
+            }
+
             ImGui::SetCursorPosY(viewport->Size.y - 50.0f);
 
-            if (ImGui::Button("INJECT", ImVec2(viewport->Size.x - 120, 40))) {
-                if (!m_dllList.empty()) {
-                    DWORD targetPid = 0;
-                    HANDLE hNewProcessThread = nullptr;
-
-                    if (m_targetMode == 0) { // existing
-                        if (m_selectedProcessIndex >= 0 && m_selectedProcessIndex < g_ProcessList.size()) {
-                            targetPid = g_ProcessList[m_selectedProcessIndex].pid;
-                        }
-                    }
-                    else { // new
-                        STARTUPINFOA si = { sizeof(si) };
-                        PROCESS_INFORMATION pi = { 0 };
-
-                        if (CreateProcessA(m_newExePath, nullptr, nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, nullptr, &si, &pi)) {
-                            targetPid = pi.dwProcessId;
-                            hNewProcessThread = pi.hThread;
-                            CloseHandle(pi.hProcess);
-                        }
-                    }
-
-                    if (targetPid != 0) {
-                        bool allSuccess = true;
-                        LOG("Starting injection into PID %lu", targetPid);
-                        
-                        auto injector = Injection::InjectorManager::CreateInjector(g_InjectorConfig);
-
-                        for (const auto& dll : m_dllList) {
-                            LOG("Injecting: %s", dll.c_str());
-                            if (!injector->Inject(targetPid, dll)) {
-                                LOG("  -> FAILED");
-                                allSuccess = false;
-                                break;
-                            }
-                            LOG("  -> SUCCESS");
-                        }
-
-                        LOG("Injection complete. Overall: %s", allSuccess ? "SUCCESS" : "FAILED");
-
-                        if (hNewProcessThread) {
-                            ResumeThread(hNewProcessThread);
-                            CloseHandle(hNewProcessThread);
-                        }
-
-                        if (allSuccess && g_InjectorConfig.closeAfter) {
-                            PostMessage(m_hWnd, WM_CLOSE, 0, 0);
-                        }
-                    }
-                }
+            bool disableInject = m_isInjecting || m_dllList.empty();
+            if (disableInject) {
+                ImGui::BeginDisabled();
             }
+
+            if (ImGui::Button(m_isInjecting ? "INJECTING..." : "INJECT", ImVec2(viewport->Size.x - 120, 40))) {
+                StartAsyncInjection();
+            }
+
+            if (disableInject) {
+                ImGui::EndDisabled();
+            }
+
             ImGui::SameLine();
             if (ImGui::Button("Settings", ImVec2(-FLT_MIN, 40))) {
                 m_showSettings = true;
@@ -343,7 +339,143 @@ namespace UI {
             RenderSettings();
         }
 
+        if (m_showResultModal.load()) {
+            ImGui::OpenPopup("Injection Result");
+        }
+
+        if (ImGui::BeginPopupModal("Injection Result", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+            std::unique_lock<std::mutex> lock(m_injectionMutex);
+            bool success = m_lastInjectionSuccess;
+            std::string title = m_resultModalTitle;
+            std::string msg = m_resultModalMessage;
+            lock.unlock();
+
+            if (success) {
+                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "%s", title.c_str());
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", title.c_str());
+            }
+            ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::TextUnformatted(msg.c_str());
+            ImGui::Spacing();
+            ImGui::Separator();
+            if (ImGui::Button("OK", ImVec2(120, 0))) {
+                std::lock_guard<std::mutex> lockClose(m_injectionMutex);
+                m_showResultModal.store(false);
+                ImGui::CloseCurrentPopup();
+                if (success && g_InjectorConfig.closeAfter) {
+                    PostMessage(m_hWnd, WM_CLOSE, 0, 0);
+                }
+            }
+            ImGui::EndPopup();
+        }
+
         ImGui::End();
+    }
+
+    void MainWindow::StartAsyncInjection() {
+        if (m_isInjecting || m_dllList.empty()) return;
+
+        DWORD targetPid = 0;
+        HANDLE hNewProcessThread = nullptr;
+
+        if (m_targetMode == 0) { // existing
+            if (m_selectedProcessIndex >= 0 && m_selectedProcessIndex < (int)g_ProcessList.size()) {
+                targetPid = g_ProcessList[m_selectedProcessIndex].pid;
+            }
+        }
+        else { // new
+            STARTUPINFOA si = { sizeof(si) };
+            PROCESS_INFORMATION pi = { 0 };
+
+            if (CreateProcessA(m_newExePath, nullptr, nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, nullptr, &si, &pi)) {
+                targetPid = pi.dwProcessId;
+                hNewProcessThread = pi.hThread;
+                CloseHandle(pi.hProcess);
+            }
+        }
+
+        if (targetPid == 0) {
+            std::lock_guard<std::mutex> lock(m_injectionMutex);
+            m_lastInjectionSuccess = false;
+            m_resultModalTitle = "Injection Error";
+            m_resultModalMessage = "Failed to identify or spawn target process.";
+            m_showResultModal.store(true);
+            return;
+        }
+
+        m_isInjecting = true;
+        {
+            std::lock_guard<std::mutex> lock(m_injectionMutex);
+            m_injectionStatusText = "Preparing injection into PID " + std::to_string(targetPid) + "...";
+        }
+
+        std::vector<std::string> dllsToInject = m_dllList;
+        Injection::InjectorConfig config = g_InjectorConfig;
+
+        // If a previous injection thread is still running, wait for it
+        if (m_injectionThread.joinable()) {
+            m_injectionThread.join();
+        }
+
+        m_stopRequested.store(false);
+        m_injectionThread = std::thread([this, targetPid, hNewProcessThread, dllsToInject, config]() {
+            LOG("Starting async injection into PID %lu", targetPid);
+            auto injector = Injection::InjectorManager::CreateInjector(config);
+
+            bool allSuccess = true;
+            std::string fullSummary;
+
+            if (!injector) {
+                allSuccess = false;
+                fullSummary = "[ERROR] Failed to create injector instance for selected injection method.";
+            } else {
+                for (size_t i = 0; i < dllsToInject.size(); ++i) {
+                    if (m_stopRequested.load()) {
+                        fullSummary += "[CANCELLED] Injection was cancelled.\n";
+                        allSuccess = false;
+                        break;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(m_injectionMutex);
+                        m_injectionStatusText = "Injecting (" + std::to_string(i + 1) + "/" + std::to_string(dllsToInject.size()) + "): " + dllsToInject[i];
+                    }
+                    LOG("Injecting: %s", dllsToInject[i].c_str());
+
+                    Injection::InjectionResult res = injector->Inject(targetPid, dllsToInject[i]);
+                    if (res.success) {
+                        LOG("  -> SUCCESS: %s", res.message.c_str());
+                        fullSummary += "[SUCCESS] " + dllsToInject[i] + "\n  -> " + res.message + "\n\n";
+                    } else {
+                        LOG("  -> FAILED: %s (Error Code: %lu)", res.message.c_str(), res.errorCode);
+                        fullSummary += "[FAILED] " + dllsToInject[i] + "\n  -> " + res.message;
+                        if (res.errorCode != 0) {
+                            fullSummary += " (Win32 Error: " + std::to_string(res.errorCode) + ")";
+                        }
+                        fullSummary += "\n\n";
+                        allSuccess = false;
+                        break;
+                    }
+                }
+            }
+
+            if (hNewProcessThread) {
+                ResumeThread(hNewProcessThread);
+                CloseHandle(hNewProcessThread);
+            }
+
+            LOG("Async injection complete. Overall: %s", allSuccess ? "SUCCESS" : "FAILED");
+
+            {
+                std::lock_guard<std::mutex> lock(m_injectionMutex);
+                m_lastInjectionSuccess = allSuccess;
+                m_resultModalTitle = allSuccess ? "Injection Successful" : "Injection Failed";
+                m_resultModalMessage = fullSummary;
+                m_showResultModal.store(true);
+                m_isInjecting = false;
+            }
+        });
     }
 
     void MainWindow::Run() {

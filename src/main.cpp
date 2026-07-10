@@ -24,14 +24,14 @@ int main() {
 }
 #endif
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
-
+static int AppMain(HINSTANCE hInstance) {
 #ifdef _DEBUG
     AllocConsole();
     SetConsoleTitleA("EZ Injector — Debug Console");
-    FILE* fp = nullptr;
-    freopen_s(&fp, "CONOUT$", "w", stdout);
-    freopen_s(&fp, "CONOUT$", "w", stderr);
+    FILE* fpOut = nullptr;
+    FILE* fpErr = nullptr;
+    freopen_s(&fpOut, "CONOUT$", "w", stdout);
+    freopen_s(&fpErr, "CONOUT$", "w", stderr);
     LOG("Debug console initialized");
     LOG("Build: DEBUG | Compiled: %s %s", __DATE__, __TIME__);
 #endif
@@ -50,4 +50,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 #endif
 
     return 0;
+}
+
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
+    __try {
+        return AppMain(hInstance);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        MessageBoxA(nullptr, "EZ Injector encountered an unhandled exception and must close.", "Fatal Error", MB_OK | MB_ICONERROR);
+        return 1;
+    }
 }

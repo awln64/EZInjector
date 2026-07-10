@@ -28,14 +28,14 @@ namespace Injection {
             return std::make_unique<KernelNativeInjector>();
         }
         else if (config.method == InjectionMethod::KernelManualMap) {
-            return std::make_unique<KernelManualMapInjector>(
-                config.mmLinkPeb,
-                config.mmErasePe,
-                config.mmResolveImports,
-                config.mmIgnoreTls,
-                config.mmConcealMem,
-                config.mmNoExceptions
-            );
+            KernelManualMapInjector::Options opts;
+            opts.linkPeb = config.mmLinkPeb;
+            opts.erasePe = config.mmErasePe;
+            opts.resolveImports = config.mmResolveImports;
+            opts.ignoreTls = config.mmIgnoreTls;
+            opts.concealMem = config.mmConcealMem;
+            opts.noExceptions = config.mmNoExceptions;
+            return std::make_unique<KernelManualMapInjector>(opts);
         }
         
         return nullptr;

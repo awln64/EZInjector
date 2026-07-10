@@ -33,7 +33,7 @@ namespace UI {
         sd.OutputWindow = hWnd;
         sd.SampleDesc.Count = 1;
         sd.Windowed = TRUE;
-        sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+        sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
         UINT createDeviceFlags = 0;
         D3D_FEATURE_LEVEL featureLevel;
@@ -43,6 +43,13 @@ namespace UI {
             nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, createDeviceFlags,
             featureLevelArray, 1, D3D11_SDK_VERSION, &sd, &g_pSwapChain,
             &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
+
+        if (res != S_OK) {
+            res = D3D11CreateDeviceAndSwapChain(
+                nullptr, D3D_DRIVER_TYPE_WARP, nullptr, createDeviceFlags,
+                featureLevelArray, 1, D3D11_SDK_VERSION, &sd, &g_pSwapChain,
+                &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
+        }
 
         if (res != S_OK) {
             return false;

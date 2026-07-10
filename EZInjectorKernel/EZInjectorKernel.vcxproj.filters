@@ -24,12 +24,18 @@
     <ClInclude Include="Logger.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="PeUtils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Driver.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Logger.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PeUtils.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

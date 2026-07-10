@@ -3,6 +3,9 @@
 #include <vector>
 #include <string>
 
+#include <atomic>
+#include <mutex>
+
 namespace UI {
 
     class MainWindow {
@@ -19,9 +22,11 @@ namespace UI {
         void Render();
         void HandleDroppedFiles();
         void RenderSettings();
+        void StartAsyncInjection();
 
         HINSTANCE m_hInstance;
         HWND m_hWnd;
+        HICON m_hIcon = nullptr;
         bool m_running;
         
         bool m_showSettings;
@@ -31,6 +36,18 @@ namespace UI {
         std::vector<std::string> m_dllList;
         int m_selectedDllIndex;
         int m_selectedProcessIndex;
+
+        std::atomic<bool> m_isInjecting{false};
+        std::string m_injectionStatusText;
+        std::mutex m_injectionMutex;
+
+        std::atomic<bool> m_showResultModal{false};
+        bool m_lastInjectionSuccess{false};
+        std::string m_resultModalTitle;
+        std::string m_resultModalMessage;
+
+        std::thread m_injectionThread;
+        std::atomic<bool> m_stopRequested{false};
 
         static std::vector<std::string> s_DroppedFilesQueue;
     };
